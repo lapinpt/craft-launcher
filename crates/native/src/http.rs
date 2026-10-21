@@ -118,8 +118,7 @@ impl Http {
         match status {
             200 => {
                 let etag = header("etag");
-                let text =
-                    resp.body_mut().with_config().limit(MAX_SMALL).read_to_string().map_err(|e| format!("unreadable answer from GitHub ({e})"))?;
+                let text = read_text_capped(&mut resp, MAX_SMALL).map_err(|e| format!("unreadable answer from GitHub ({e})"))?;
                 Ok(Fetched::Body { text, etag })
             }
             304 => Ok(Fetched::NotModified),
@@ -145,7 +144,7 @@ impl Http {
         // Seconds only; an HTTP date falls back to our own backoff.
         let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|r| r.trim().parse::<i64>().ok());
         match resp.status().as_u16() {
-            200 => resp.body_mut().with_config().limit(MAX_SMALL).read_to_string().map_err(|e| failed(format!("unreadable answer ({e})"))),
+            200 => read_text_capped(&mut resp, MAX_SMALL).map_err(|e| failed(format!("unreadable answer ({e})"))),
             s => Err(FeedError { why: format!("{} answered HTTP {s}", host(url)), throttled: s == 429, retry_after }),
         }
     }
@@ -154,7 +153,7 @@ impl Http {
     pub fn get_text(&self, url: &str) -> Result<Option<String>, String> {
         let mut resp = self.small.get(url).call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;
         match resp.status().as_u16() {
-            200 => resp.body_mut().with_config().limit(MAX_SMALL).read_to_string().map(Some).map_err(|e| format!("unreadable answer ({e})")),
+            200 => read_text_capped(&mut resp, MAX_SMALL).map(Some).map_err(|e| format!("unreadable answer ({e})")),
             404 => Ok(None),
             s => Err(format!("{} answered HTTP {s}", host(url))),
         }
@@ -548,6 +547,20 @@ fn host(url: &str) -> &str {
     url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url)
 }
 
+/// Reads a text body, rejecting one whose *decoded* size exceeds `max`.
+///
+/// `limit(max)` alone silently truncates at the cap, and a transparently gzip-decoded response can
+/// expand far beyond the compressed bytes that crossed the wire. We ask for one byte past the cap
+/// so an oversized answer is refused outright — before it is parsed — instead of being truncated
+/// into something that merely fails to parse (CWE-409).
+fn read_text_capped(resp: &mut ureq::http::Response<ureq::Body>, max: u64) -> Result<String, String> {
+    let text = resp.body_mut().with_config().limit(max + 1).read_to_string().map_err(|e| e.to_string())?;
+    if text.len() as u64 > max {
+        return Err(format!("the answer is larger than {max} bytes"));
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -886,6 +899,19 @@ pub(crate) mod tests {
         });
         assert!(error.contains("couldn't save the download"), "{error}");
         assert!(part.exists(), "a blocked partial file must be left alone");
+    }
+
+    #[test]
+    fn an_oversized_feed_answer_is_refused_before_parsing() {
+        // More than MAX_SMALL (4 MiB) of decoded text: rejected outright, not truncated and parsed.
+        let big = vec![b' '; (MAX_SMALL as usize) + 1024];
+        let (url, _) = serve(big, vec![Reply::Full]);
+        let http = Http::new().unwrap();
+        let err = http.get_feed(&url).unwrap_err();
+        assert!(err.why.contains("larger than"), "{}", err.why);
+        // A small answer still comes back intact.
+        let (url, _) = serve(b"{\"ok\":true}".to_vec(), vec![Reply::Full]);
+        assert_eq!(http.get_feed(&url).unwrap(), "{\"ok\":true}");
     }
 
     /// Live: a real Craft App release asset (`cargo test -p artcraft-launcher-native -- --ignored`).
