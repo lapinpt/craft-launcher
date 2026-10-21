@@ -572,19 +572,40 @@ fn serve(o: &Opts) -> Result<(), String> {
             }
         });
     }
+    // Bounded admission: a local dev tool still shouldn't let idle or flooding clients spawn
+    // unbounded threads. Refuse new connections past the cap, and never let a failed thread spawn
+    // take down the listener (CWE-770).
+    const MAX_HANDLERS: usize = 64;
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
         let (mirror, base) = (o.mirror.clone(), base.clone());
-        std::thread::spawn(move || {
+        if active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_HANDLERS {
+            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let mut out = stream;
+            let _ = respond(&mut out, "503 Service Unavailable", "text/plain", b"busy", false);
+            continue;
+        }
+        let worker_active = active.clone();
+        let spawned = std::thread::Builder::new().spawn(move || {
             if let Err(e) = handle(stream, &mirror, &base) {
                 eprintln!("  {e}");
             }
+            worker_active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         });
+        if spawned.is_err() {
+            // Couldn't start a worker: drop this connection but keep serving.
+            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("  couldn't start a connection handler; dropping the connection");
+        }
     }
     Ok(())
 }
 
 fn handle(stream: TcpStream, mirror: &Path, base: &str) -> Result<(), String> {
     let io = |e: std::io::Error| e.to_string();
+    // A total deadline for receiving the request line and headers: an idle client must not be able
+    // to hold a handler thread open indefinitely (CWE-770).
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(15))).map_err(io)?;
     let mut reader = BufReader::new(stream.try_clone().map_err(io)?);
     let mut line = String::new();
     reader.read_line(&mut line).map_err(io)?;
@@ -603,6 +624,8 @@ fn handle(stream: TcpStream, mirror: &Path, base: &str) -> Result<(), String> {
         }
     }
     let mut out = stream;
+    // Headers are in; a legitimate download can take as long as it needs, so lift the deadline.
+    let _ = out.set_read_timeout(None);
     let head = method == "HEAD";
     if method != "GET" && !head {
         return respond(&mut out, "405 Method Not Allowed", "text/plain", b"", head);
