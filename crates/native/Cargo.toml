@@ -28,6 +28,10 @@ sha2 = "0.10"
 # root list: webpki-roots and webpki-root-certs are CDLA-licensed.
 ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "_ring", "gzip", "platform-verifier"] }
 
+[dev-dependencies]
+# The tests' fake server answers with real gzip streams (Reply::Gzipped), on every platform.
+flate2 = "1"
+
 [target.'cfg(unix)'.dependencies]
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
