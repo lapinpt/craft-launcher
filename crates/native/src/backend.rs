@@ -125,7 +125,10 @@ impl NativeBackend {
             installed: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
             restarting: AtomicBool::new(false),
-            manifest: Mutex::new(Manifest::load(&paths.manifest())),
+            manifest: Mutex::new(match crate::paths::portable_root() {
+                Some(root) => Manifest::load_portable(&paths.manifest(), &root),
+                None => Manifest::load(&paths.manifest()),
+            }),
             options: Mutex::new(BackendOptions::default()),
             checking: AtomicBool::new(false),
             detecting: AtomicBool::new(false),
