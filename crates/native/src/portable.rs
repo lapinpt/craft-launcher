@@ -204,20 +204,44 @@ pub fn install(
     let staging = Staging(staging);
     let unpacked = staging.0.join("unpacked");
     std::fs::create_dir(&unpacked).map_err(|e| e.to_string())?;
-    let files = extract(file, &unpacked)?;
+    let unpacked_files = extract(file, &unpacked)?;
+    // Craft releases can put the entire portable app inside a version-named wrapper directory.
+    // Install the contents into the launcher's app folder in either archive layout.
+    let top = single_top_folder(&unpacked_files);
+    let mut files = unpacked_files
+        .into_iter()
+        .map(|archive_path| {
+            let installed_path = match &top {
+                Some(top) => archive_path.strip_prefix(top).map_err(|e| e.to_string())?.to_path_buf(),
+                None => archive_path.clone(),
+            };
+            Ok((archive_path, installed_path))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let executable = files
         .iter()
-        .find(|relative| {
-            relative.parent().is_some_and(|p| p.as_os_str().is_empty())
-                && relative
+        .find(|(_, installed_path)| {
+            installed_path.parent().is_some_and(|p| p.as_os_str().is_empty())
+                && installed_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|name| app.stems().any(|stem| name.eq_ignore_ascii_case(&format!("{stem}.exe"))))
         })
-        .ok_or("The portable ZIP does not contain the expected executable at its root.")?
-        .clone();
+        .map(|(_, installed_path)| installed_path.clone())
+        .ok_or("The portable ZIP does not contain the expected executable at its root or in one enclosing folder.")?;
+
+    // Craft apps use portable.txt to keep their data beside the executable. Most releases ship
+    // this marker already; add it when missing (LightCraft currently omits it) and track it as an
+    // installed file so updates and removal remain safe.
+    if !files.iter().any(|(_, installed_path)| {
+        installed_path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("portable.txt"))
+    }) {
+        let marker = PathBuf::from("portable.txt");
+        std::fs::write(unpacked.join(&marker), []).map_err(|e| format!("couldn't create the portable data marker ({e})"))?;
+        files.push((marker.clone(), marker));
+    }
     // Validate the entire transaction before moving any existing program file.
-    for relative in &files {
+    for (_, relative) in &files {
         let target = destination.join(relative);
         validate_owned_directory(&destination, target.parent().ok_or("no destination folder")?)?;
         if let Ok(meta) = std::fs::symlink_metadata(&target) {
@@ -237,7 +261,7 @@ pub fn install(
         kind: PackageKind::PortableZip,
         path: destination.join(executable),
         installed_at: crate::now(),
-        files: files.iter().map(|relative| destination.join(relative)).collect(),
+        files: files.iter().map(|(_, relative)| destination.join(relative)).collect(),
         needs_root: false,
     };
     let mut moved = Vec::new();
@@ -255,10 +279,10 @@ pub fn install(
             std::fs::remove_file(&old).map_err(|e| e.to_string())?;
             moved.push(relative.clone());
         }
-        for relative in &files {
+        for (archive_path, relative) in &files {
             let target = destination.join(relative);
             std::fs::create_dir_all(target.parent().ok_or("no destination folder")?).map_err(|e| e.to_string())?;
-            let mut input = std::fs::File::open(unpacked.join(relative)).map_err(|e| e.to_string())?;
+            let mut input = std::fs::File::open(unpacked.join(archive_path)).map_err(|e| e.to_string())?;
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| e.to_string())?;
             copied.push(relative.clone());
             std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
@@ -588,6 +612,49 @@ mod tests {
         remove(app, &record).unwrap();
         assert!(!record.path.exists());
         assert_eq!(std::fs::read(personal).unwrap(), b"personal");
+    }
+
+    #[test]
+    fn wrapped_zip_installs_into_app_folder_and_adds_portable_data_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = CraftApp::by_id("lightcraft").unwrap();
+        let paths = Paths::under(dir.path());
+        let parent = dir.path().join("PortableApps");
+        let zip = archive(
+            dir.path(),
+            "lightcraft.zip",
+            &[
+                ("lightcraft-0.11.0-windows-x64-portable/lightcraft.exe", b"program"),
+                ("lightcraft-0.11.0-windows-x64-portable/resources/app.dat", b"resource"),
+            ],
+        );
+
+        let record = install(app, &zip, "0.11.0", None, &paths, Some(&parent), false, &mut |_| Ok(())).unwrap();
+        let app_dir = std::fs::canonicalize(parent.join("lightcraft")).unwrap();
+        assert_eq!(record.path, app_dir.join("lightcraft.exe"));
+        assert_eq!(std::fs::read(&record.path).unwrap(), b"program");
+        assert_eq!(std::fs::read(app_dir.join("resources/app.dat")).unwrap(), b"resource");
+        assert!(app_dir.join("portable.txt").is_file());
+        assert!(record.files.contains(&app_dir.join("portable.txt")));
+        assert!(!app_dir.join("lightcraft-0.11.0-windows-x64-portable").exists());
+
+        let update = archive(
+            dir.path(),
+            "lightcraft-update.zip",
+            &[
+                ("lightcraft-0.12.0-windows-x64-portable/lightcraft.exe", b"updated program"),
+                ("lightcraft-0.12.0-windows-x64-portable/resources/new.dat", b"updated resource"),
+            ],
+        );
+        let record = install(app, &update, "0.12.0", Some(&record), &paths, None, false, &mut |_| Ok(())).unwrap();
+        assert_eq!(record.path, app_dir.join("lightcraft.exe"));
+        assert_eq!(std::fs::read(&record.path).unwrap(), b"updated program");
+        assert!(!app_dir.join("resources/app.dat").exists());
+        assert_eq!(std::fs::read(app_dir.join("resources/new.dat")).unwrap(), b"updated resource");
+        assert!(app_dir.join("portable.txt").is_file());
+
+        remove(app, &record).unwrap();
+        assert!(!app_dir.join("portable.txt").exists());
     }
 
     #[test]
