@@ -17,7 +17,7 @@ const DIR: &str = if cfg!(any(target_os = "macos", target_os = "windows")) { "Ar
 impl Paths {
     pub fn new() -> Result<Self, String> {
         if let Some(root) = portable_root() {
-            return Ok(Self::under(&root));
+            return Ok(Self::portable(&root));
         }
         let data = dirs::data_local_dir().ok_or("no per-user data folder on this system")?.join(DIR);
         let cache = dirs::cache_dir().ok_or("no per-user cache folder on this system")?.join(DIR);
@@ -27,6 +27,42 @@ impl Paths {
     /// For tests: everything under one folder.
     pub fn under(root: &std::path::Path) -> Self {
         Self { data: root.join("data"), cache: root.join("cache") }
+    }
+
+    /// Portable installs keep launcher state in `Data` beside the executable. Migrate the prior
+    /// `ArtCraftLauncherData/{data,cache}` layout when possible, keeping the old paths usable if
+    /// the move is blocked (for example, by a running old copy or a read-only drive).
+    pub fn portable(root: &std::path::Path) -> Self {
+        let new_data = root.join("Data");
+        let old_root = root.join("ArtCraftLauncherData");
+        let old_data = old_root.join("data");
+        let old_cache = old_root.join("cache");
+        let data = if !new_data.exists() && old_data.is_dir() {
+            match std::fs::rename(&old_data, &new_data) {
+                Ok(()) => new_data,
+                Err(e) => {
+                    log::warn!("couldn't move portable launcher data to {} ({e})", new_data.display());
+                    old_data.clone()
+                }
+            }
+        } else {
+            new_data
+        };
+        let new_cache = data.join("cache");
+        let cache = if data == root.join("Data") && !new_cache.exists() && old_cache.is_dir() {
+            match std::fs::create_dir_all(&data).and_then(|()| std::fs::rename(&old_cache, &new_cache)) {
+                Ok(()) => new_cache,
+                Err(e) => {
+                    log::warn!("couldn't move portable launcher cache to {} ({e})", new_cache.display());
+                    old_cache
+                }
+            }
+        } else if data == old_data {
+            old_cache
+        } else {
+            new_cache
+        };
+        Self { data, cache }
     }
 
     pub fn downloads(&self) -> PathBuf {
@@ -62,9 +98,10 @@ impl Paths {
         self.data.join("logs")
     }
 
-    /// Where tarball installs (FreeBSD, Linux without AppImage) are unpacked: `<data>/apps/<app>`.
+    /// Where apps are unpacked. Portable mode uses the sibling `Apps` folder; other installs use
+    /// `<data>/apps`.
     pub fn apps(&self) -> PathBuf {
-        self.data.join("apps")
+        portable_root().map_or_else(|| self.data.join("apps"), |root| root.join("Apps"))
     }
 
     /// The folder an app unpacked in [`Self::apps`] sees as its home: `<data>/apps/<app>/home`.
@@ -87,12 +124,12 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> 
     Ok(())
 }
 
-/// Portable mode: a `portable.txt` beside the executable keeps everything in
-/// `ArtCraftLauncherData` next to it (the Windows portable zip ships one).
+/// Portable mode: a `portable.txt` beside the executable keeps data in `Data` and apps in `Apps`
+/// beside it (the Windows portable zip ships one).
 pub fn portable_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    dir.join("portable.txt").is_file().then(|| dir.join("ArtCraftLauncherData"))
+    dir.join("portable.txt").is_file().then(|| dir.to_path_buf())
 }
 
 #[cfg(test)]
@@ -138,5 +175,22 @@ mod tests {
         write_atomic(&path, b"new manifest").unwrap();
         assert_eq!(std::fs::read(&victim).unwrap(), b"keep this file");
         assert_eq!(std::fs::read(&path).unwrap(), b"new manifest");
+    }
+
+    #[test]
+    fn portable_paths_migrate_legacy_data_and_cache_into_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("ArtCraftLauncherData");
+        std::fs::create_dir_all(old.join("data")).unwrap();
+        std::fs::create_dir_all(old.join("cache")).unwrap();
+        std::fs::write(old.join("data").join("app.ron"), b"settings").unwrap();
+        std::fs::write(old.join("cache").join("releases.json"), b"cache").unwrap();
+
+        let paths = Paths::portable(dir.path());
+
+        assert_eq!(paths.data, dir.path().join("Data"));
+        assert_eq!(paths.cache, dir.path().join("Data/cache"));
+        assert_eq!(std::fs::read(paths.data.join("app.ron")).unwrap(), b"settings");
+        assert_eq!(std::fs::read(paths.cache.join("releases.json")).unwrap(), b"cache");
     }
 }

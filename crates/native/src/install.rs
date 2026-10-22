@@ -21,7 +21,7 @@
 //! Every download is checked against its published SHA-256 before anything is unpacked, a
 //! running app is never replaced, and a new copy is fully in place before the old one goes.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use artcraft_launcher_core::Arch;
 use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, InstallLocations, JobPhase};
@@ -356,7 +356,11 @@ fn destination(
         return Err("custom install folders aren't supported on this system".into());
     }
     let parent = selected_folder(folder, kind != PackageKind::Msi)?;
-    Ok(Some(if kind == PackageKind::Msi { parent.join(app.name) } else { parent }))
+    Ok(Some(match kind {
+        PackageKind::Msi => parent.join(app.name),
+        PackageKind::PortableZip => parent.join("Apps"),
+        _ => parent,
+    }))
 }
 
 /// The folder a new install goes inside when the person hasn't chosen one, so the UI can show
@@ -410,11 +414,13 @@ fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(invalid("choose an absolute path"));
     }
-    if !path.is_dir() {
-        return Err(invalid("the folder is unavailable. Create it or reconnect its drive first"));
-    }
+    validate_install_folder(&path).map_err(|reason| invalid(&reason))?;
     if writable {
-        write_probe(&path).map_err(|e| invalid(&e.to_string()))?;
+        // A custom folder can be created by the install itself. Before downloading, probe the
+        // nearest existing directory so a missing path such as `D:\PortableApps` is accepted
+        // only when its destination drive is reachable and writable.
+        let probe_dir = path.ancestors().find(|ancestor| ancestor.is_dir()).ok_or_else(|| invalid("the folder is unavailable"))?;
+        write_probe(probe_dir).map_err(|e| invalid(&e.to_string()))?;
     }
     Ok(path)
 }
@@ -441,6 +447,31 @@ fn mac_applications_dir(system: &Path, home: Option<&Path>) -> Option<PathBuf> {
         return Some(system.to_path_buf());
     }
     home.map(|home| home.join("Applications"))
+}
+
+/// Accept a custom destination that does not exist yet, while rejecting invalid or dangling
+/// components before any download or install work begins.
+fn validate_install_folder(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() || path.components().any(|component| matches!(component, Component::ParentDir | Component::CurDir)) {
+        return Err("choose an absolute path without parent-directory components".into());
+    }
+    for ancestor in path.ancestors() {
+        match std::fs::canonicalize(ancestor) {
+            Ok(resolved) => {
+                if !resolved.is_dir() {
+                    return Err("the installation folder contains a non-directory component".into());
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(ancestor).is_ok() {
+                    return Err("the installation folder contains a dangling link".into());
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("the installation folder has no existing ancestor".into())
 }
 
 #[cfg(any(windows, test))]
@@ -2261,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_folders_must_exist_and_leave_no_probe_files() {
+    fn selected_folders_can_be_created_during_install_and_leave_no_probe_files() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(selected_folder(dir.path().to_str().unwrap(), true).unwrap(), dir.path());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -2272,14 +2303,14 @@ mod tests {
             assert_eq!(selected_folder(quoted.to_str().unwrap(), true).unwrap(), quoted);
         }
         let missing = dir.path().join("unavailable/Apps");
-        assert!(selected_folder(missing.to_str().unwrap(), true).is_err());
+        assert_eq!(selected_folder(missing.to_str().unwrap(), true).unwrap(), missing);
         assert!(!missing.exists());
         assert!(selected_folder("relative/folder", true).is_err());
         assert!(selected_folder("bad\nfolder", true).is_err());
         let app = CraftApp::by_id("photocraft").unwrap();
         let locations = InstallLocations { root: Some(dir.path().display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::Msi, None, None, &locations).unwrap(), Some(dir.path().join("PhotoCraft")));
-        assert_eq!(destination(app, PackageKind::PortableZip, None, None, &locations).unwrap(), Some(dir.path().to_path_buf()));
+        assert_eq!(destination(app, PackageKind::PortableZip, None, None, &locations).unwrap(), Some(dir.path().join("Apps")));
         let old = record("0.5.0", PackageKind::PortableZip, dir.path().join("PhotoCraft/photocraft.exe"), vec![], false);
         let unavailable = InstallLocations { root: Some(dir.path().join("missing").display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::PortableZip, None, Some(&old), &unavailable).unwrap(), None);

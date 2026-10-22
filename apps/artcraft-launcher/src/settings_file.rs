@@ -8,16 +8,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Where the settings file is. In portable mode it is inside `ArtCraftLauncherData`, so a suite
-/// carried on a stick keeps its settings when it is plugged into another computer. Without
+/// Where the settings file is. In portable mode it is inside `Data`, so a suite carried on a stick
+/// keeps its settings when it is plugged into another computer. Without
 /// `portable.txt` it is eframe's own folder, which is in the user's profile and cannot travel.
 pub fn path(app_id: &str) -> Option<PathBuf> {
     path_with_portable_root(app_id, artcraft_launcher_native::paths::portable_root().as_deref())
 }
 
-/// The settings file inside a portable suite: the same `data` folder `Paths` already uses.
+/// The settings file inside the portable `Data` folder.
 fn portable_settings(root: &Path) -> PathBuf {
-    root.join("data").join("app.ron")
+    root.join("Data").join("app.ron")
 }
 
 fn path_with_portable_root(app_id: &str, portable_root: Option<&Path>) -> Option<PathBuf> {
@@ -105,8 +105,8 @@ mod tests {
     #[test]
     fn a_portable_suite_keeps_its_settings_inside_itself() {
         // Built with `join` so the test reads the same on Windows and on Linux CI.
-        let root = PathBuf::from("Suite").join("ArtCraftLauncherData");
-        assert_eq!(portable_settings(&root), root.join("data").join("app.ron"));
+        let root = PathBuf::from("Suite");
+        assert_eq!(portable_settings(&root), root.join("Data").join("app.ron"));
     }
 
     #[test]
@@ -119,8 +119,8 @@ mod tests {
 
     #[test]
     fn portable_settings_stay_under_portable_data_folder() {
-        let root = Path::new("portable").join("ArtCraftLauncherData");
-        assert_eq!(path_with_portable_root("ignored-app-id", Some(&root)), Some(root.join("data").join("app.ron")));
+        let root = Path::new("portable");
+        assert_eq!(path_with_portable_root("ignored-app-id", Some(root)), Some(root.join("Data").join("app.ron")));
     }
 
     #[test]
