@@ -1,0 +1,55 @@
+name: Windows portable test build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-portable:
+    name: Build Windows x64 portable ZIP
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-portable-test
+
+      - name: Run portable installer tests
+        run: 'cargo test --locked -p artcraft-launcher-native portable::tests::'
+
+      - name: Build and package
+        shell: pwsh
+        env:
+          ARTCRAFT_LAUNCHER_BUILD_SHA: ${{ github.sha }}
+          ARTCRAFT_LAUNCHER_REQUIRE_WINRES: "1"
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:ARTCRAFT_LAUNCHER_BUILD_DATE = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+          cargo build --release --locked -p artcraft-launcher --target x86_64-pc-windows-msvc
+
+          $stage = Join-Path $env:RUNNER_TEMP 'artcraft-launcher-windows-x64-portable'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item 'target/x86_64-pc-windows-msvc/release/artcraft-launcher.exe' $stage
+          Copy-Item 'packaging/windows/portable.txt' $stage
+          foreach ($file in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md') {
+            if (Test-Path $file) { Copy-Item $file $stage }
+          }
+
+          $archive = Join-Path $env:RUNNER_TEMP 'artcraft-launcher-windows-x64-portable.zip'
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -CompressionLevel Optimal
+          if (!(Test-Path $archive)) { throw 'The portable ZIP was not created.' }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: artcraft-launcher-windows-x64-portable
+          path: ${{ runner.temp }}/artcraft-launcher-windows-x64-portable.zip
+          if-no-files-found: error
+          retention-days: 7
