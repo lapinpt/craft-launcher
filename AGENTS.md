@@ -113,6 +113,12 @@ only; English where there is none): never bundle a CJK font, they are 10 MB and 
    GitHub release JSON fixtures (small, committed under `crates/core/tests/fixtures/`).
 5. When fetching anything, use a generic `ArtCraft-Launcher/<version>` User-Agent and never put
    a person's name, email or other personal details in requests.
+6. **Time goes through `jiff`** (workspace dependency). Never hand-roll UTC/calendar conversion
+   (days-to-date algorithms, leap-year math); a module owns only its output format string. The one
+   exception is range extension: past the years jiff can represent, shift the date by whole 400-year
+   Gregorian cycles (146,097 days, after which the calendar repeats), let jiff compute the month and
+   day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is
+   plain arithmetic).
 
 ## 3. Before you finish a task
 
@@ -153,7 +159,7 @@ Packaging facts the code relies on:
   `DesktopShortcutChoice`) and reused by the next version, and `self_update.rs` reads `InstallDir`
   to know the running copy came from the MSI. Its shortcuts set AppUserModelID
   `ai.storyteller.artcraft-launcher`, which toast notifications need. `portable.txt` beside the exe switches on portable mode
-  (`ArtCraftLauncherData\` next to the exe).
+  (`Data\` next to the exe, with installed apps under `App\`).
 - The macOS bundle is `ArtCraft Launcher.app` (executable `Contents/MacOS/ArtCraft Launcher`), a
   normal Dock app that can also sit in the menu bar: `LSUIElement` must never be set.
 - Linux: the tray uses StatusNotifierItem over D-Bus and notifications use

@@ -115,6 +115,17 @@ pub fn spawn_detached(mut cmd: Command) -> Result<(), String> {
     Ok(())
 }
 
+/// Waits up to `timeout` for the process `pid` to exit, and says whether it has. A process that
+/// can't be opened, because it's gone or never was, counts as exited.
+#[cfg(windows)]
+pub fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    use winsafe::{HPROCESS, co};
+    let Ok(process) = HPROCESS::OpenProcess(co::PROCESS::SYNCHRONIZE, false, pid) else { return true };
+    // u32::MAX would mean INFINITE.
+    let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+    process.WaitForSingleObject(Some(ms)).is_ok_and(|w| w == co::WAIT::OBJECT_0)
+}
+
 /// Whether this process is running inside a Flatpak container sandbox.
 pub fn in_sandbox() -> bool {
     std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists()
@@ -505,6 +516,15 @@ mod run_tests {
     /// A shell command line, for the platform's shell.
     fn shell(script: &str) -> (&'static str, [&str; 2]) {
         if cfg!(windows) { ("cmd", ["/C", script]) } else { ("/bin/sh", ["-c", script]) }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn waiting_for_a_process_ends_when_it_exits() {
+        let mut child = Command::new("ping").args(["-n", "3", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+        assert!(!wait_for_exit(child.id(), Duration::from_millis(200)), "it's still running");
+        assert!(wait_for_exit(child.id(), Duration::from_secs(30)), "it has exited");
+        child.wait().unwrap();
     }
 
     #[test]

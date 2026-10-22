@@ -19,7 +19,7 @@
 //! Every download is checked against its published SHA-256 before anything is unpacked, a
 //! running app is never replaced, and a new copy is fully in place before the old one goes.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, InstallLocations, JobPhase};
 use artcraft_launcher_core::release::{self, Asset, Release};
@@ -81,6 +81,7 @@ pub fn install_at(
     {
         return Err(format!("{} is running. Quit it, then try again.", app.name));
     }
+    bind_artifact_version(app, release, asset)?;
     if !job.replace
         && let Some(inst) = existing
         && let (Some(rel_v), Some(inst_v)) = (release.version.as_ref(), inst.version.as_ref())
@@ -147,6 +148,38 @@ pub fn install_at(
     result.map_err(|e| if e == CANCELLED { INSTALL_CANCELLED.to_string() } else { e })
 }
 
+/// Rejects an artifact whose own identity disagrees with the release that authorized it.
+///
+/// A feed or GitHub converter supplies the release version, the asset filename, and the download
+/// URL independently. The downgrade guard and the persisted record both trust `release.version`,
+/// so a controller could advertise a new version while pointing at an older official artifact —
+/// bypassing the guard and recording a false installed version (finding: version not bound to the
+/// release). We require the version encoded in the asset filename and the release tag embedded in
+/// the download URL to agree with the release version before any bytes are fetched.
+fn bind_artifact_version(app: &CraftApp, release: &Release, asset: &Asset) -> Result<(), String> {
+    let Some(release_version) = release.version.as_ref() else { return Ok(()) };
+    let mismatch = || format!("{}'s download does not match the advertised version {}.", app.name, release.version_label());
+
+    // The version in the asset filename (`<stem>-<version>-<os>-<arch>.<ext>`), when it carries one.
+    let stems: Vec<&str> = app.stems().collect();
+    if let Some(parsed) = artcraft_launcher_core::platform::parse_asset_name(&asset.name, &stems)
+        && version::parse(&parsed.version).as_ref() != Some(release_version)
+    {
+        return Err(mismatch());
+    }
+
+    // The release tag embedded in a GitHub download URL (`.../releases/download/<tag>/<name>`).
+    if let Some(tag) = asset.url.split("/releases/download/").nth(1).and_then(|rest| rest.split('/').next())
+        && !tag.is_empty()
+        && version::parse(tag).is_some()
+        && version::parse(tag).as_ref() != Some(release_version)
+        && tag != release.tag
+    {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
 /// What a new install would write over: something already at its destination that the launcher
 /// didn't put there.
 pub fn occupied(
@@ -198,7 +231,11 @@ fn destination(
         return Err("custom install folders aren't supported on this system".into());
     }
     let parent = selected_folder(folder, kind != PackageKind::Msi)?;
-    Ok(Some(if kind == PackageKind::Msi { parent.join(app.name) } else { parent }))
+    Ok(Some(match kind {
+        PackageKind::Msi => parent.join(app.name),
+        PackageKind::PortableZip => parent.join("App"),
+        _ => parent,
+    }))
 }
 
 fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
@@ -216,20 +253,48 @@ fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(invalid("choose an absolute path"));
     }
-    if !path.is_dir() {
-        return Err(invalid("the folder is unavailable. Create it or reconnect its drive first"));
-    }
+    validate_install_folder(&path).map_err(|reason| invalid(&reason))?;
     if writable {
-        let probe = path.join(format!(
+        // A custom folder can be created by the install itself. Before downloading, probe the
+        // nearest existing directory so a missing path such as `D:\PortableApps` is accepted
+        // only when its destination drive is reachable and writable.
+        let probe_dir = path.ancestors().find(|ancestor| ancestor.is_dir()).ok_or_else(|| invalid("the folder is unavailable"))?;
+        let probe_name = format!(
             ".artcraft-launcher-write-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
-        ));
+        );
+        let probe = probe_dir.join(probe_name);
         let output = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map_err(|e| invalid(&e.to_string()))?;
         drop(output);
         std::fs::remove_file(&probe).map_err(|e| invalid(&e.to_string()))?;
     }
     Ok(path)
+}
+
+/// Accept a custom destination that does not exist yet, while rejecting invalid or dangling
+/// components before any download or install work begins.
+fn validate_install_folder(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() || path.components().any(|component| matches!(component, Component::ParentDir | Component::CurDir)) {
+        return Err("choose an absolute path without parent-directory components".into());
+    }
+    for ancestor in path.ancestors() {
+        match std::fs::canonicalize(ancestor) {
+            Ok(resolved) => {
+                if !resolved.is_dir() {
+                    return Err("the installation folder contains a non-directory component".into());
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(ancestor).is_ok() {
+                    return Err("the installation folder contains a dangling link".into());
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("the installation folder has no existing ancestor".into())
 }
 
 #[cfg(any(windows, test))]
@@ -1501,6 +1566,13 @@ pub mod windows {
         })
     }
 
+    /// Runs the launcher's own new MSI for a self-update, with the same progress window and no
+    /// restart as [`run_msi`], and waits for it.
+    pub fn reinstall(msi: &Path) -> Result<(), String> {
+        let status = msi_command(&msiexec(), msi)?.status().map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
+        explain(status.code())
+    }
+
     /// Runs `work` once no other Windows Installer job of ours is running (a second one would
     /// stop with error 1618). Cancelled while it waits, it never runs.
     fn in_turn(stop: &Stop, phase: &mut dyn FnMut(JobPhase), working: JobPhase, work: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
@@ -1574,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_folders_must_exist_and_leave_no_probe_files() {
+    fn selected_folders_can_be_created_during_install_and_leave_no_probe_files() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(selected_folder(dir.path().to_str().unwrap(), true).unwrap(), dir.path());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -1585,14 +1657,14 @@ mod tests {
             assert_eq!(selected_folder(quoted.to_str().unwrap(), true).unwrap(), quoted);
         }
         let missing = dir.path().join("unavailable/Apps");
-        assert!(selected_folder(missing.to_str().unwrap(), true).is_err());
+        assert_eq!(selected_folder(missing.to_str().unwrap(), true).unwrap(), missing);
         assert!(!missing.exists());
         assert!(selected_folder("relative/folder", true).is_err());
         assert!(selected_folder("bad\nfolder", true).is_err());
         let app = CraftApp::by_id("photocraft").unwrap();
         let locations = InstallLocations { root: Some(dir.path().display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::Msi, None, None, &locations).unwrap(), Some(dir.path().join("PhotoCraft")));
-        assert_eq!(destination(app, PackageKind::PortableZip, None, None, &locations).unwrap(), Some(dir.path().to_path_buf()));
+        assert_eq!(destination(app, PackageKind::PortableZip, None, None, &locations).unwrap(), Some(dir.path().join("App")));
         let old = record("0.5.0", PackageKind::PortableZip, dir.path().join("PhotoCraft/photocraft.exe"), vec![], false);
         let unavailable = InstallLocations { root: Some(dir.path().join("missing").display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::PortableZip, None, Some(&old), &unavailable).unwrap(), None);
@@ -2253,6 +2325,37 @@ mod tests {
         let result = install_at(app, &release, &asset, PackageKind::AppImage, Some(&installed), None, &mut job, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("installed version 0.5.0 is newer"));
+    }
+
+    #[test]
+    fn install_rejects_an_artifact_whose_version_is_not_the_advertised_one() {
+        // The release advertises 99.0.0, but the selected artifact is an older official build
+        // (filename and URL tag say 0.4.0). The guard must refuse before any download.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let http = Http::new().unwrap();
+        let phase = &mut |_| ();
+        let locations = InstallLocations::default();
+        let app = CraftApp::by_id("photocraft").unwrap();
+        let release = Release { version: version::parse("99.0.0"), tag: "v99.0.0".into(), ..Release::default() };
+        let asset = Asset {
+            name: "photocraft-0.4.0-linux-x86_64.AppImage".into(),
+            url: "https://github.com/storytold/photocraft/releases/download/v0.4.0/photocraft-0.4.0-linux-x86_64.AppImage".into(),
+            ..Asset::default()
+        };
+        let stop = Stop::default();
+        let mut job = Job { http: &http, paths: &paths, stop: &stop, phase, install_locations: &locations, replace: false };
+        let result = install_at(app, &release, &asset, PackageKind::AppImage, None, None, &mut job, None);
+        assert!(result.is_err(), "mismatched artifact version must be rejected");
+        assert!(result.unwrap_err().contains("does not match the advertised version"));
+
+        // A matching artifact passes the guard (it fails later for unrelated reasons, not the bind).
+        let good = Asset {
+            name: "photocraft-99.0.0-linux-x86_64.AppImage".into(),
+            url: "https://github.com/storytold/photocraft/releases/download/v99.0.0/photocraft-99.0.0-linux-x86_64.AppImage".into(),
+            ..Asset::default()
+        };
+        assert!(bind_artifact_version(app, &release, &good).is_ok());
     }
 
     #[cfg(target_os = "linux")]
