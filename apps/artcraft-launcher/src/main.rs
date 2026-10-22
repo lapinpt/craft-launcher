@@ -117,7 +117,7 @@ fn main() -> ExitCode {
                 let (waker, launcher) = (waker.clone(), &mut launcher);
                 eframe::run_native(
                     "ArtCraft Launcher",
-                    native_options(hidden),
+                    native_options(hidden, settings_path.clone()),
                     Box::new(move |cc| {
                         launcher.open(cc, &waker);
                         Ok(Box::new(Shell::new(cc, launcher, hidden)))
@@ -141,7 +141,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn native_options(hidden: bool) -> eframe::NativeOptions {
+fn native_options(hidden: bool, persistence_path: Option<PathBuf>) -> eframe::NativeOptions {
     let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.artcraft-launcher.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
@@ -164,7 +164,7 @@ fn native_options(hidden: bool) -> eframe::NativeOptions {
     } else if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
-    eframe::NativeOptions { viewport, persist_window: true, wgpu_options: wgpu_options(), ..Default::default() }
+    eframe::NativeOptions { viewport, persist_window: true, persistence_path, wgpu_options: wgpu_options(), ..Default::default() }
 }
 
 /// wgpu's backend list. On Windows that is Direct3D 12 with GL as the fallback, not Vulkan:
