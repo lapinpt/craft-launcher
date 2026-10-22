@@ -10,7 +10,7 @@
 //! |---|---|
 //! | macOS `.app` | copy the new bundle from the DMG over this one (fine while running), reopen it |
 //! | Windows MSI (per-user, any folder) | after exit, run the new MSI (it reinstalls into the same folder), then start the exe |
-//! | Windows portable zip | after exit, unzip over this folder (settings in `ArtCraftLauncherData` stay) |
+//! | Windows portable zip | after exit, unzip over this folder (`Apps` and `Data` stay) |
 //! | Linux AppImage | rename the new AppImage over this one (fine while running), start it |
 //! | Linux `.deb` / `.rpm` | the system package manager, with the password prompt; then restart |
 //! | Linux Flatpak | reinstall the bundle with `--reinstall` via the host portal; then restart |
@@ -509,7 +509,7 @@ pub fn finish(args: &[OsString]) -> Option<Result<(), String>> {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn launcher_paths(exe: &Path) -> Result<Paths, String> {
     match exe.parent() {
-        Some(dir) if dir.join("portable.txt").is_file() => Ok(Paths::under(&dir.join("ArtCraftLauncherData"))),
+        Some(dir) if dir.join("portable.txt").is_file() => Ok(Paths::portable(dir)),
         _ => Paths::new(),
     }
 }
@@ -666,8 +666,7 @@ mod tests {
     fn the_update_helper_reads_back_its_arguments() {
         let exe = Path::new(r"C:\Users\O'Brien\AppData\Local\Programs\ArtCraft Launcher\artcraft-launcher.exe");
         let msi = Finish::Msi(PathBuf::from(r"C:\Users\O'Brien\AppData\Local\ArtCraft Launcher\cache\artcraft-launcher-0.7.0-windows-x64.msi"));
-        let portable =
-            Finish::Portable { zip: PathBuf::from(r"D:\Tools\x 1.zip"), tmp: PathBuf::from(r"D:\Tools\ArtCraftLauncherData\cache\launcher-update") };
+        let portable = Finish::Portable { zip: PathBuf::from(r"D:\Tools\x 1.zip"), tmp: PathBuf::from(r"D:\Tools\Data\cache\launcher-update") };
         for finish in [msi, portable] {
             let args = helper_args(4242, exe, &finish);
             assert_eq!(args.first().map(OsString::as_os_str), Some(std::ffi::OsStr::new(FINISH_FLAG)));
@@ -706,10 +705,10 @@ mod tests {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("ArtCraft Launcher");
-        std::fs::create_dir_all(folder.join("ArtCraftLauncherData")).unwrap();
+        std::fs::create_dir_all(folder.join("Data")).unwrap();
         std::fs::write(folder.join("artcraft-launcher.exe"), "0.1.0").unwrap();
         std::fs::write(folder.join("portable.txt"), "").unwrap();
-        std::fs::write(folder.join("ArtCraftLauncherData").join("settings.json"), "{}").unwrap();
+        std::fs::write(folder.join("Data").join("settings.json"), "{}").unwrap();
         let zip = dir.path().join("artcraft-launcher-0.2.0-windows-x64-portable.zip");
         let mut writer = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
         let signed_exe = std::fs::read(system_program("cmd.exe")).unwrap();
@@ -735,7 +734,7 @@ mod tests {
         old.wait().unwrap();
         helper.join().unwrap().unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), signed_exe);
-        assert_eq!(std::fs::read_to_string(folder.join("ArtCraftLauncherData").join("settings.json")).unwrap(), "{}");
+        assert_eq!(std::fs::read_to_string(folder.join("Data").join("settings.json")).unwrap(), "{}");
         assert!(!folder.join("artcraft-launcher-0.2.0-windows-x64-portable").exists(), "the zip's folder must not be nested in the launcher's");
         assert!(!zip.exists() && !tmp.exists(), "the download and the staging folder are removed");
     }
@@ -790,8 +789,8 @@ mod tests {
         let exe = dir.path().join("artcraft-launcher.exe");
         std::fs::write(dir.path().join("portable.txt"), "").unwrap();
         let paths = launcher_paths(&exe).unwrap();
-        assert_eq!(paths.cache, dir.path().join("ArtCraftLauncherData").join("cache"));
-        assert_eq!(paths.data, dir.path().join("ArtCraftLauncherData").join("data"));
+        assert_eq!(paths.cache, dir.path().join("Data/cache"));
+        assert_eq!(paths.data, dir.path().join("Data"));
     }
 
     /// The launcher quits for an update only when the helper finds the cache the update was
@@ -805,7 +804,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let exe = folder.join("artcraft-launcher.exe");
         std::fs::write(&exe, "0.1.0").unwrap();
-        let own = Paths::under(&folder.join("ArtCraftLauncherData"));
+        let own = Paths::portable(&folder);
         let temporary = Paths::under(&dir.path().join("Temp").join("artcraft-launcher"));
         for paths in [&own, &temporary] {
             std::fs::create_dir_all(paths.downloads()).unwrap();
@@ -965,10 +964,10 @@ mod tests {
         for launcher in [None, Some(b"not a Windows program".as_slice()), Some(b"".as_slice())] {
             let dir = tempfile::tempdir().unwrap();
             let folder = dir.path().join("ArtCraft Launcher");
-            std::fs::create_dir_all(folder.join("ArtCraftLauncherData")).unwrap();
+            std::fs::create_dir_all(folder.join("Data")).unwrap();
             let exe = folder.join("artcraft-launcher.exe");
             std::fs::write(&exe, "old launcher").unwrap();
-            let settings = folder.join("ArtCraftLauncherData/settings.json");
+            let settings = folder.join("Data/settings.json");
             std::fs::write(&settings, "settings").unwrap();
             let zip = dir.path().join("update.zip");
             let mut writer = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());

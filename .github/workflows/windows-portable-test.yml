@@ -24,6 +24,9 @@ jobs:
       - name: Run portable installer tests
         run: 'cargo test --locked -p artcraft-launcher-native portable::tests::'
 
+      - name: Test new custom install folders
+        run: 'cargo test --locked -p artcraft-launcher-native install::tests::selected_folders_can_be_created_during_install_and_leave_no_probe_files'
+
       - name: Build and package
         shell: pwsh
         env:

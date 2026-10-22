@@ -133,8 +133,8 @@ release's published SHA-256 before it is installed, and a running app is never r
 
 The launcher writes its log to `logs/artcraft-launcher.log` in its data folder
 (`~/.local/share/artcraft-launcher` on Linux, `~/Library/Application Support/ArtCraft Launcher`
-on macOS, `%LOCALAPPDATA%\ArtCraft Launcher` on Windows, `ArtCraftLauncherData` beside the
-portable zip's executable) and keeps the previous two runs as `artcraft-launcher.1.log` and
+on macOS, `%LOCALAPPDATA%\ArtCraft Launcher` on Windows, `Data` beside the portable zip's
+executable) and keeps the previous two runs as `artcraft-launcher.1.log` and
 `artcraft-launcher.2.log`. `RUST_LOG` changes what it records (`debug`, `info,zbus=warn`, …).
 
 ## Downloads
