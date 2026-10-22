@@ -12,14 +12,16 @@ use std::path::{Path, PathBuf};
 /// carried on a stick keeps its settings when it is plugged into another computer. Without
 /// `portable.txt` it is eframe's own folder, which is in the user's profile and cannot travel.
 pub fn path(app_id: &str) -> Option<PathBuf> {
-    artcraft_launcher_native::paths::portable_root()
-        .map(|root| portable_settings(&root))
-        .or_else(|| eframe::storage_dir(app_id).map(|dir| dir.join("app.ron")))
+    path_with_portable_root(app_id, artcraft_launcher_native::paths::portable_root().as_deref())
 }
 
 /// The settings file inside a portable suite: the same `data` folder `Paths` already uses.
 fn portable_settings(root: &Path) -> PathBuf {
     root.join("data").join("app.ron")
+}
+
+fn path_with_portable_root(app_id: &str, portable_root: Option<&Path>) -> Option<PathBuf> {
+    portable_root.map(portable_settings).or_else(|| eframe::storage_dir(app_id).map(|dir| dir.join("app.ron")))
 }
 
 /// The value stored under `key`, if the file has one that still reads.
@@ -113,6 +115,18 @@ mod tests {
         let settings = Settings { last_check: Some(1_791_500_000), notify: false, ..Settings::default() };
         assert_eq!(save(&dir.file(), "settings", &settings), Ok(()));
         assert_eq!(load::<Settings>(&dir.file(), "settings"), Some(settings));
+    }
+
+    #[test]
+    fn portable_settings_stay_under_portable_data_folder() {
+        let root = Path::new("portable").join("ArtCraftLauncherData");
+        assert_eq!(path_with_portable_root("ignored-app-id", Some(&root)), Some(root.join("data").join("app.ron")));
+    }
+
+    #[test]
+    fn regular_settings_keep_eframes_default_location() {
+        let app_id = "ai.storyteller.artcraft-launcher";
+        assert_eq!(path_with_portable_root(app_id, None), eframe::storage_dir(app_id).map(|dir| dir.join("app.ron")));
     }
 
     #[test]

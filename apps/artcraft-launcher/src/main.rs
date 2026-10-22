@@ -131,7 +131,7 @@ fn main() -> ExitCode {
                 let (waker, launcher) = (waker.clone(), &mut launcher);
                 eframe::run_native(
                     "ArtCraft Launcher",
-                    native_options(hidden),
+                    native_options(hidden, settings_path.clone()),
                     Box::new(move |cc| {
                         launcher.open(cc, &waker);
                         Ok(Box::new(Shell::new(cc, launcher, hidden)))
@@ -161,7 +161,7 @@ fn main() -> ExitCode {
 /// state persists to the portable-aware settings path, system font fallback is off so the
 /// deliberate bundled faces stay in charge, and wgpu limits are clamped to the adapter so a
 /// short adapter cannot fail device creation.
-fn native_options(hidden: bool) -> eframe::NativeOptions {
+fn native_options(hidden: bool, persistence_path: Option<PathBuf>) -> eframe::NativeOptions {
     let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.artcraft-launcher.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
@@ -189,7 +189,7 @@ fn native_options(hidden: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport,
         persist_window: true,
-        persistence_path: settings_file::path(APP_ID),
+        persistence_path,
         wgpu_options: within_adapter_limits(wgpu_options()),
         // The launcher's typography is deliberate (its bundled Latin and monochrome emoji faces
         // plus, for a CJK language, the one system face read by `theme`). eframe's system-font
