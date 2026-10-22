@@ -2,7 +2,8 @@ ArtCraft Launcher portable mode
 
 While this file sits next to artcraft-launcher.exe, ArtCraft Launcher keeps its settings, download
 cache and record of installed apps in the Data folder beside it. Craft Apps are installed in the
-Apps folder. Copy the whole folder to move ArtCraft Launcher and its apps together.
+App folder beside artcraft-launcher.exe. Copy the whole folder to move ArtCraft Launcher and its
+apps together.
 
 Delete this file to use the normal per-user settings folder (%APPDATA%\ArtCraft Launcher) instead.
 Existing portable settings in ArtCraftLauncherData are moved into Data when possible.

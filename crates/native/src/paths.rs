@@ -98,10 +98,10 @@ impl Paths {
         self.data.join("logs")
     }
 
-    /// Where apps are unpacked. Portable mode uses the sibling `Apps` folder; other installs use
+    /// Where apps are unpacked. Portable mode uses the sibling `App` folder; other installs use
     /// `<data>/apps`.
     pub fn apps(&self) -> PathBuf {
-        portable_root().map_or_else(|| self.data.join("apps"), |root| root.join("Apps"))
+        portable_root().map_or_else(|| self.data.join("apps"), |root| portable_apps_dir(&root))
     }
 
     /// The folder an app unpacked in [`Self::apps`] sees as its home: `<data>/apps/<app>/home`.
@@ -124,12 +124,17 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> 
     Ok(())
 }
 
-/// Portable mode: a `portable.txt` beside the executable keeps data in `Data` and apps in `Apps`
+/// Portable mode: a `portable.txt` beside the executable keeps data in `Data` and apps in `App`
 /// beside it (the Windows portable zip ships one).
 pub fn portable_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     dir.join("portable.txt").is_file().then(|| dir.to_path_buf())
+}
+
+/// Apps installed by the portable launcher live under the launcher executable's directory.
+pub fn portable_apps_dir(root: &std::path::Path) -> PathBuf {
+    root.join("App")
 }
 
 #[cfg(test)]
@@ -192,5 +197,11 @@ mod tests {
         assert_eq!(paths.cache, dir.path().join("Data/cache"));
         assert_eq!(std::fs::read(paths.data.join("app.ron")).unwrap(), b"settings");
         assert_eq!(std::fs::read(paths.cache.join("releases.json")).unwrap(), b"cache");
+    }
+
+    #[test]
+    fn portable_apps_are_under_the_executable_folder() {
+        let root = PathBuf::from(r"D:\PortableApps\artcraft-launcher");
+        assert_eq!(portable_apps_dir(&root), root.join("App"));
     }
 }
