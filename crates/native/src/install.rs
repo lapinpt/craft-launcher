@@ -1019,6 +1019,10 @@ pub(crate) mod linux {
 
     fn unpack_tree(app: &CraftApp, file: &Path, staged: &Path, paths: &Paths) -> Result<PathBuf, String> {
         let tree = tree::unpack(app, file, staged)?;
+        // Validate the staged binary and set its mode *before* either swap: a rejected update
+        // (e.g. a symlinked app binary) must never disturb the installed tree it replaces.
+        let staged_bin = tree.join("bin").join(app.id);
+        make_runnable_within(&tree, &staged_bin)?;
         let root = paths.apps().join(app.id);
         std::fs::create_dir_all(&root).map_err(|e| format!("couldn't create {} ({e})", root.display()))?;
         for dir in ["bin", "share"] {
@@ -1026,10 +1030,34 @@ pub(crate) mod linux {
                 swap_into_place(&tree.join(dir), &root.join(dir))?;
             }
         }
-        let bin = root.join("bin").join(app.id);
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("couldn't make {} runnable ({e})", bin.display()))?;
-        Ok(bin)
+        Ok(root.join("bin").join(app.id))
+    }
+
+    /// Makes `bin` executable (0755) without ever following an archive-controlled symlink out of
+    /// the installation tree.
+    ///
+    /// `bin` comes from an untrusted tarball. If it, or one of its ancestors inside `root`, is a
+    /// symlink, a plain `std::fs::set_permissions(bin, …)` would follow the link and change the
+    /// mode of an existing file *outside* the tree (CWE-59). We reject any symlinked component
+    /// before changing permissions, so the chmod can only ever reach a regular file that lives at
+    /// the verified path inside the launcher's own apps folder.
+    fn make_runnable_within(root: &Path, bin: &Path) -> Result<(), String> {
+        // No component between `root` and `bin` may be a symlink.
+        let rel = bin.strip_prefix(root).map_err(|_| "the app binary isn't inside the install tree".to_string())?;
+        let mut here = root.to_path_buf();
+        for part in rel.components() {
+            here.push(part);
+            let meta = std::fs::symlink_metadata(&here).map_err(|e| format!("couldn't check {} ({e})", here.display()))?;
+            if meta.file_type().is_symlink() {
+                return Err("the download's app binary escapes the install tree through a symlink".into());
+            }
+        }
+        // The final component is a verified non-symlink regular file inside the launcher's own
+        // apps folder, so changing its mode cannot reach anything outside the tree.
+        if !here.metadata().map_err(|e| e.to_string())?.file_type().is_file() {
+            return Err("the download's app binary isn't a regular file".into());
+        }
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("couldn't make {} runnable ({e})", bin.display()))
     }
 
     /// Removes a tree the launcher unpacked in [`install_tree`], keeping the app's `home/`: the
@@ -2046,6 +2074,56 @@ mod tests {
         assert!(!bin.exists() && !root.join("share").exists());
         assert!(home.join(".config/wordcraft/settings.toml").is_file(), "the app's settings were removed with it");
         assert!(linux::remove_tree(app, &paths).is_err(), "a second removal says there is nothing there");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tarball_binary_that_is_a_symlink_out_of_the_tree_is_refused() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let app = CraftApp::by_id("wordcraft").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+
+        // A working install the rejected update must leave untouched.
+        let good = dir.path().join("wordcraft-0.3.0-linux-x86_64.tar.gz");
+        tarball(&good, &["wordcraft-0.3.0-linux-x86_64/bin/wordcraft"]);
+        let bin = linux::install_tree(app, &good, &paths).unwrap();
+        assert_eq!(std::fs::read_to_string(&bin).unwrap(), "hi");
+
+        // A file outside the install tree that the archive tries to chmod through a symlink.
+        let outside = dir.path().join("victim");
+        std::fs::write(&outside, b"secret").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        // A tarball whose bin/wordcraft is a symlink to that external file.
+        let file = dir.path().join("evil.tar.gz");
+        let f = std::fs::File::create(&file).unwrap();
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(f, flate2::Compression::fast()));
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        link.set_mode(0o777);
+        link.set_cksum();
+        b.append_link(&mut link, "wordcraft-0.3.0-linux-x86_64/bin/wordcraft", &outside).unwrap();
+        // A second real file so the top folder is detected.
+        let mut reg = tar::Header::new_gnu();
+        reg.set_size(2);
+        reg.set_mode(0o644);
+        reg.set_cksum();
+        b.append_data(&mut reg, "wordcraft-0.3.0-linux-x86_64/share/applications/ai.storyteller.wordcraft.desktop", &b"hi"[..]).unwrap();
+        b.into_inner().unwrap().finish().unwrap();
+        drop(std::io::stdout().flush());
+
+        let result = linux::install_tree(app, &file, &paths);
+        assert!(result.is_err(), "a symlink binary must be rejected: {result:?}");
+        assert!(result.unwrap_err().contains("symlink"));
+        // The external file keeps its original mode: the chmod never reached it.
+        let mode = std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the external file's permissions must be untouched");
+        // The rejected update left the previously installed, working binary fully intact.
+        assert!(bin.is_file(), "the rejected update must not remove the working binary");
+        assert_eq!(std::fs::read_to_string(&bin).unwrap(), "hi");
     }
 
     #[cfg(target_os = "linux")]
