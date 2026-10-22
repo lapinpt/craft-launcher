@@ -317,6 +317,7 @@ dependencies = [
  "dirs 6.0.0",
  "dunce",
  "flate2",
+ "getrandom 0.3.4",
  "log",
  "plist",
  "serde",

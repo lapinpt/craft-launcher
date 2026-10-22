@@ -44,7 +44,8 @@ const MAX_GREETING: usize = 128;
 /// It is read once, created on first use with owner-only permissions.
 fn token() -> Option<String> {
     use std::io::Read;
-    let dir = dirs::data_local_dir()?.join(if cfg!(any(target_os = "macos", target_os = "windows")) { "ArtCraft Launcher" } else { "artcraft-launcher" });
+    let dir =
+        dirs::data_local_dir()?.join(if cfg!(any(target_os = "macos", target_os = "windows")) { "ArtCraft Launcher" } else { "artcraft-launcher" });
     let path = dir.join(".instance-token");
     if let Ok(mut f) = std::fs::File::open(&path) {
         let mut s = String::new();
@@ -55,31 +56,18 @@ fn token() -> Option<String> {
             }
         }
     }
-    // Create it, owner-only. The secret is a SHA-256 over several entropy sources, the strongest
-    // being std's RandomState, which is seeded from the OS's secure randomness.
+    // Create it, owner-only, using the OS CSPRNG.
     let _ = std::fs::create_dir_all(&dir);
-    let secret = fresh_secret();
+    let secret = fresh_secret()?;
     write_private(&path, secret.as_bytes()).ok()?;
     Some(secret)
 }
 
-/// A hard-to-guess hex secret, without pulling in an RNG crate: SHA-256 over std's OS-seeded
-/// `RandomState` (twice), the process id, and a high-resolution timestamp.
-fn fresh_secret() -> String {
-    use sha2::{Digest, Sha256};
-    use std::hash::BuildHasher;
-    let mut hasher = Sha256::new();
-    for _ in 0..4 {
-        // Each RandomState is independently seeded from the OS; hashing a fixed value through it
-        // yields that seed's entropy.
-        let seed = std::collections::hash_map::RandomState::new().hash_one(0u8);
-        hasher.update(seed.to_le_bytes());
-    }
-    hasher.update(std::process::id().to_le_bytes());
-    if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        hasher.update(now.as_nanos().to_le_bytes());
-    }
-    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+/// A 256-bit hex secret filled directly from the OS CSPRNG.
+fn fresh_secret() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Writes `bytes` to `path` readable and writable only by the owner.
@@ -246,8 +234,8 @@ fn answer(message: &[u8], ours: Option<&Version>, token: Option<&str>) -> Option
 
 /// The new start's side: says hello to whatever holds the port and reads the answer.
 fn ask(addr: SocketAddr, ours: Option<&Version>, token: Option<&str>) -> std::io::Result<Answer> {
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
     let Some(ours) = ours else {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
         // Can't compare without our own version: ask it to show itself, as before.
         stream.write_all(SHOW)?;
         return Ok(Answer::Defer);
@@ -256,6 +244,18 @@ fn ask(addr: SocketAddr, ours: Option<&Version>, token: Option<&str>) -> std::io
         Some(tok) if !tok.is_empty() => format!("{HELLO}{ours} {tok}"),
         _ => format!("{HELLO}{ours}"),
     };
+    let answer = ask_once(addr, ours, &greeting)?;
+    // Launchers from before the token handshake (0.1.4 to 0.6.1) try to parse the whole greeting
+    // after `hello ` as a version and hang up when a space + token follows. Retry once without the
+    // token so an upgrade over such a running copy still replaces it.
+    if matches!(answer, Answer::Legacy) && matches!(token, Some(tok) if !tok.is_empty()) {
+        return ask_once(addr, ours, &format!("{HELLO}{ours}"));
+    }
+    Ok(answer)
+}
+
+fn ask_once(addr: SocketAddr, ours: &Version, greeting: &str) -> std::io::Result<Answer> {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
     stream.write_all(greeting.as_bytes())?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -408,13 +408,16 @@ mod tests {
 
     #[test]
     fn a_running_launcher_from_before_the_handshake_is_recognised() {
-        // What 0.1.0 to 0.1.3 do with a message they don't know: read it and hang up.
+        // What 0.1.0 to 0.1.3 do with a message they don't know: read it and hang up (on both the
+        // initial token-bearing greeting and the tokenless retry).
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let old = std::thread::spawn(move || {
-            if let Ok((mut s, _)) = listener.accept() {
-                let mut buf = [0u8; 64];
-                let _ = s.read(&mut buf);
+            for _ in 0..2 {
+                if let Ok((mut s, _)) = listener.accept() {
+                    let mut buf = [0u8; 64];
+                    let _ = s.read(&mut buf);
+                }
             }
         });
         assert_eq!(ask(addr, Some(&v("0.1.4")), Some(TOK)).ok(), Some(Answer::Legacy));
@@ -422,10 +425,31 @@ mod tests {
     }
 
     #[test]
+    fn a_tokenless_retry_replaces_a_running_launcher_from_before_the_token_handshake() {
+        // What 0.1.4 to 0.6.1 do: reject `hello <ver> <tok>` with no reply, then accept `hello <ver>`.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let old = std::thread::spawn(move || {
+            for _ in 0..2 {
+                if let Ok((mut s, _)) = listener.accept() {
+                    let msg = read_message(&mut s);
+                    if let Some(ver) = std::str::from_utf8(&msg).ok().and_then(|m| m.strip_prefix(HELLO)).and_then(version::parse)
+                        && version::is_newer(&ver, &v("0.6.1"))
+                    {
+                        let _ = s.write_all(b"artcraft-launcher:running 0.6.1");
+                    }
+                }
+            }
+        });
+        assert_eq!(ask(addr, Some(&v("0.6.2")), Some(TOK)).ok(), Some(Answer::TakeOver));
+        let _ = old.join();
+    }
+
+    #[test]
     fn a_fresh_secret_is_a_distinct_nonempty_hex_string() {
-        let a = fresh_secret();
-        let b = fresh_secret();
-        assert_eq!(a.len(), 64, "sha-256 hex");
+        let a = fresh_secret().unwrap();
+        let b = fresh_secret().unwrap();
+        assert_eq!(a.len(), 64, "256-bit hex");
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b, "two secrets must differ");
     }

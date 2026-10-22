@@ -603,18 +603,26 @@ fn serve(o: &Opts) -> Result<(), String> {
 
 fn handle(stream: TcpStream, mirror: &Path, base: &str) -> Result<(), String> {
     let io = |e: std::io::Error| e.to_string();
-    // A total deadline for receiving the request line and headers: an idle client must not be able
-    // to hold a handler thread open indefinitely (CWE-770).
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(15))).map_err(io)?;
+    // A single wall-clock deadline across the request line and every header: an idle or trickling
+    // client must not be able to hold a handler thread open indefinitely (CWE-770).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let mut reader = BufReader::new(stream.try_clone().map_err(io)?);
+    let read_line_until = |reader: &mut BufReader<TcpStream>, buf: &mut String| -> Result<usize, String> {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("request header deadline exceeded".into());
+        }
+        reader.get_ref().set_read_timeout(Some(remaining)).map_err(io)?;
+        reader.read_line(buf).map_err(io)
+    };
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(io)?;
+    read_line_until(&mut reader, &mut line)?;
     let mut parts = line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     let mut range_start: Option<u64> = None;
     loop {
         let mut h = String::new();
-        if reader.read_line(&mut h).map_err(io)? == 0 || h.trim().is_empty() {
+        if read_line_until(&mut reader, &mut h)? == 0 || h.trim().is_empty() {
             break;
         }
         if let Some((k, v)) = h.split_once(':')
@@ -624,6 +632,7 @@ fn handle(stream: TcpStream, mirror: &Path, base: &str) -> Result<(), String> {
         }
     }
     let mut out = stream;
+    out.set_write_timeout(Some(std::time::Duration::from_secs(15))).map_err(io)?;
     // Headers are in; a legitimate download can take as long as it needs, so lift the deadline.
     let _ = out.set_read_timeout(None);
     let head = method == "HEAD";
