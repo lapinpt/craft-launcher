@@ -233,7 +233,7 @@ fn destination(
     let parent = selected_folder(folder, kind != PackageKind::Msi)?;
     Ok(Some(match kind {
         PackageKind::Msi => parent.join(app.name),
-        PackageKind::PortableZip => parent.join("Apps"),
+        PackageKind::PortableZip => parent.join("App"),
         _ => parent,
     }))
 }
@@ -1664,7 +1664,7 @@ mod tests {
         let app = CraftApp::by_id("photocraft").unwrap();
         let locations = InstallLocations { root: Some(dir.path().display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::Msi, None, None, &locations).unwrap(), Some(dir.path().join("PhotoCraft")));
-        assert_eq!(destination(app, PackageKind::PortableZip, None, None, &locations).unwrap(), Some(dir.path().join("Apps")));
+        assert_eq!(destination(app, PackageKind::PortableZip, None, None, &locations).unwrap(), Some(dir.path().join("App")));
         let old = record("0.5.0", PackageKind::PortableZip, dir.path().join("PhotoCraft/photocraft.exe"), vec![], false);
         let unavailable = InstallLocations { root: Some(dir.path().join("missing").display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::PortableZip, None, Some(&old), &unavailable).unwrap(), None);
