@@ -229,12 +229,22 @@ pub fn install(
     let (files, entries) = extract(file, &unpacked)?;
     // Accept both a flat layout (files at the ZIP root) and a single wrapper-folder layout,
     // but never arbitrary nesting.
-    let (unpacked, files) = flatten_zip_layout(app, &unpacked, files, &entries)?;
+    let (unpacked, mut files) = flatten_zip_layout(app, &unpacked, files, &entries)?;
     let executable = files
         .iter()
         .find(|relative| is_root_executable(relative, app))
         .ok_or("The portable ZIP does not contain the expected executable at its root.")?
         .clone();
+    // Craft apps use portable.txt to keep their data beside the executable. Most releases ship
+    // this marker already; add it when missing (LightCraft currently omits it) and track it as an
+    // installed file so updates and removal remain safe.
+    if !files.iter().any(|relative| {
+        relative.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("portable.txt"))
+    }) {
+        let marker = PathBuf::from("portable.txt");
+        std::fs::write(unpacked.join(&marker), []).map_err(|e| format!("couldn't create the portable data marker ({e})"))?;
+        files.push(marker);
+    }
     // Validate the entire transaction before moving any existing program file.
     for relative in &files {
         let target = destination.join(relative);
@@ -750,6 +760,49 @@ mod tests {
         remove(app, &record).unwrap();
         assert!(!record.path.exists());
         assert_eq!(std::fs::read(personal).unwrap(), b"personal");
+    }
+
+    #[test]
+    fn wrapped_zip_installs_into_app_folder_and_adds_portable_data_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = CraftApp::by_id("lightcraft").unwrap();
+        let paths = Paths::under(dir.path());
+        let parent = dir.path().join("PortableApps");
+        let zip = archive(
+            dir.path(),
+            "lightcraft.zip",
+            &[
+                ("lightcraft-0.11.0-windows-x64-portable/lightcraft.exe", b"program"),
+                ("lightcraft-0.11.0-windows-x64-portable/resources/app.dat", b"resource"),
+            ],
+        );
+
+        let record = install(app, &zip, "0.11.0", None, &paths, Some(&parent), false, &mut |_| Ok(())).unwrap();
+        let app_dir = std::fs::canonicalize(parent.join("lightcraft")).unwrap();
+        assert_eq!(record.path, app_dir.join("lightcraft.exe"));
+        assert_eq!(std::fs::read(&record.path).unwrap(), b"program");
+        assert_eq!(std::fs::read(app_dir.join("resources/app.dat")).unwrap(), b"resource");
+        assert!(app_dir.join("portable.txt").is_file());
+        assert!(record.files.contains(&app_dir.join("portable.txt")));
+        assert!(!app_dir.join("lightcraft-0.11.0-windows-x64-portable").exists());
+
+        let update = archive(
+            dir.path(),
+            "lightcraft-update.zip",
+            &[
+                ("lightcraft-0.12.0-windows-x64-portable/lightcraft.exe", b"updated program"),
+                ("lightcraft-0.12.0-windows-x64-portable/resources/new.dat", b"updated resource"),
+            ],
+        );
+        let record = install(app, &update, "0.12.0", Some(&record), &paths, None, false, &mut |_| Ok(())).unwrap();
+        assert_eq!(record.path, app_dir.join("lightcraft.exe"));
+        assert_eq!(std::fs::read(&record.path).unwrap(), b"updated program");
+        assert!(!app_dir.join("resources/app.dat").exists());
+        assert_eq!(std::fs::read(app_dir.join("resources/new.dat")).unwrap(), b"updated resource");
+        assert!(app_dir.join("portable.txt").is_file());
+
+        remove(app, &record).unwrap();
+        assert!(!app_dir.join("portable.txt").exists());
     }
 
     #[test]
