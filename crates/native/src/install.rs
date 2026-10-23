@@ -230,7 +230,7 @@ fn destination(
     if !matches!(kind, PackageKind::Dmg | PackageKind::AppImage | PackageKind::Msi | PackageKind::PortableZip) || process::in_sandbox() {
         return Err("custom install folders aren't supported on this system".into());
     }
-    let parent = selected_folder(folder, kind != PackageKind::Msi)?;
+    let parent = selected_folder(folder, kind != PackageKind::Msi, kind == PackageKind::PortableZip)?;
     Ok(Some(match kind {
         PackageKind::Msi => parent.join(app.name),
         PackageKind::PortableZip => parent.join("App"),
@@ -238,7 +238,7 @@ fn destination(
     }))
 }
 
-fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
+fn selected_folder(folder: &str, writable: bool, allow_missing: bool) -> Result<PathBuf, String> {
     let path = if folder == "~" {
         dirs::home_dir().ok_or("no home folder")?
     } else if let Some(relative) = folder.strip_prefix("~/") {
@@ -253,7 +253,7 @@ fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(invalid("choose an absolute path"));
     }
-    validate_install_folder(&path).map_err(|reason| invalid(&reason))?;
+    validate_install_folder(&path, allow_missing).map_err(|reason| invalid(&reason))?;
     if writable {
         // A custom folder can be created by the install itself. Before downloading, probe the
         // nearest existing directory so a missing path such as `D:\PortableApps` is accepted
@@ -274,9 +274,12 @@ fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
 
 /// Accept a custom destination that does not exist yet, while rejecting invalid or dangling
 /// components before any download or install work begins.
-fn validate_install_folder(path: &Path) -> Result<(), String> {
+fn validate_install_folder(path: &Path, allow_missing: bool) -> Result<(), String> {
     if !path.is_absolute() || path.components().any(|component| matches!(component, Component::ParentDir | Component::CurDir)) {
         return Err("choose an absolute path without parent-directory components".into());
+    }
+    if !allow_missing && !path.is_dir() {
+        return Err("the folder is unavailable. Create it or reconnect its drive first".into());
     }
     for ancestor in path.ancestors() {
         match std::fs::canonicalize(ancestor) {
@@ -1648,19 +1651,20 @@ mod tests {
     #[test]
     fn selected_folders_can_be_created_during_install_and_leave_no_probe_files() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(selected_folder(dir.path().to_str().unwrap(), true).unwrap(), dir.path());
+        assert_eq!(selected_folder(dir.path().to_str().unwrap(), true, false).unwrap(), dir.path());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         #[cfg(unix)]
         {
             let quoted = dir.path().join("Craft \"Apps\"");
             std::fs::create_dir(&quoted).unwrap();
-            assert_eq!(selected_folder(quoted.to_str().unwrap(), true).unwrap(), quoted);
+            assert_eq!(selected_folder(quoted.to_str().unwrap(), true, false).unwrap(), quoted);
         }
         let missing = dir.path().join("unavailable/Apps");
-        assert_eq!(selected_folder(missing.to_str().unwrap(), true).unwrap(), missing);
+        assert_eq!(selected_folder(missing.to_str().unwrap(), true, true).unwrap(), missing);
+        assert!(selected_folder(missing.to_str().unwrap(), true, false).unwrap_err().contains("folder is unavailable"));
         assert!(!missing.exists());
-        assert!(selected_folder("relative/folder", true).is_err());
-        assert!(selected_folder("bad\nfolder", true).is_err());
+        assert!(selected_folder("relative/folder", true, true).is_err());
+        assert!(selected_folder("bad\nfolder", true, true).is_err());
         let app = CraftApp::by_id("photocraft").unwrap();
         let locations = InstallLocations { root: Some(dir.path().display().to_string()), ..Default::default() };
         assert_eq!(destination(app, PackageKind::Msi, None, None, &locations).unwrap(), Some(dir.path().join("PhotoCraft")));
@@ -1775,9 +1779,9 @@ mod tests {
         let asset = Asset { name: "photocraft.zip".into(), ..Default::default() };
         let occupied = |previous| occupied(app, &asset, PackageKind::PortableZip, None, previous, &locations, &paths).unwrap();
         assert_eq!(occupied(None), None);
-        std::fs::create_dir(dir.path().join("photocraft")).unwrap();
-        assert_eq!(occupied(None), Some(dir.path().join("photocraft")));
-        let old = record("0.5.0", PackageKind::PortableZip, dir.path().join("photocraft/photocraft.exe"), vec![], false);
+        std::fs::create_dir_all(dir.path().join("App/photocraft")).unwrap();
+        assert_eq!(occupied(None), Some(dir.path().join("App/photocraft")));
+        let old = record("0.5.0", PackageKind::PortableZip, dir.path().join("App/photocraft/photocraft.exe"), vec![], false);
         assert_eq!(occupied(Some(&old)), None);
     }
 
