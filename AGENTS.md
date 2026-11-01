@@ -142,7 +142,7 @@ The version lives only in `[workspace.package] version` in the root `Cargo.toml`
 `.github/workflows/release.yml`, which builds every platform and creates the draft GitHub Release
 **ArtCraft Launcher v<version>** with `SHA256SUMS.txt`.
 
-Release assets (keep these names exact; the launcher's own self-update and the README rely on them):
+Release assets (keep these names exact; packaging and the README rely on them):
 
 | Platform | Files |
 |---|---|
@@ -157,13 +157,11 @@ Packaging facts the code relies on:
 - The Windows MSI is **per-user** (no UAC prompt), by default into
   `%LOCALAPPDATA%\Programs\ArtCraft Launcher`. Double-clicked it opens a WixUI setup wizard
   (Welcome; a folder page with a "Create a desktop shortcut" box; Ready; progress; Finish with
-  "Launch"), whose art `package.ps1` draws at build time; self-update runs it with `/passive`, no
-  wizard. The folder and the shortcut choice are recorded under
+  "Launch"), whose art `package.ps1` draws at build time. The folder and the shortcut choice are recorded under
   `HKCU\Software\Learning Machines LLC\ArtCraft Launcher` (`InstallDir`,
-  `DesktopShortcutChoice`) and reused by the next version, and `self_update.rs` reads `InstallDir`
-  to know the running copy came from the MSI. Its shortcuts set AppUserModelID
+  `DesktopShortcutChoice`) and reused by the next version. Its shortcuts set AppUserModelID
   `ai.storyteller.artcraft-launcher`, which toast notifications need. `portable.txt` beside the exe switches on portable mode
-  (`Data\` next to the exe, with installed apps under `App\`).
+  (`Data\` next to the exe, with installed apps under `Apps\`).
 - The macOS bundle is `ArtCraft Launcher.app` (executable `Contents/MacOS/ArtCraft Launcher`), a
   normal Dock app that can also sit in the menu bar: `LSUIElement` must never be set.
 - Linux: the tray uses StatusNotifierItem over D-Bus and notifications use

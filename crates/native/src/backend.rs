@@ -285,7 +285,8 @@ impl NativeBackend {
                 shared.emit(Event::Notices { announcements: f.announcements.clone(), alerts: f.alerts.clone() });
             }
             let now = crate::now();
-            let queue = Mutex::new(SUITE.iter().chain(std::iter::once(&LAUNCHER)).collect::<Vec<&CraftApp>>());
+            // This fork does not self-update the launcher. Check releases for Craft Apps only.
+            let queue = Mutex::new(SUITE.iter().collect::<Vec<&CraftApp>>());
             let sources = sweep(&queue, &mirror, feed.as_ref(), fallback, &source, &shared, &paths, &options, force, now);
             source.save();
             {
@@ -1232,7 +1233,7 @@ impl Backend for NativeBackend {
             Some(Os::Windows) => "Show in Explorer",
             _ => "Show in Files",
         };
-        Capabilities { manage_apps: true, reveal_label, self_update: self.shared.self_install.get().is_some_and(Option::is_some) }
+        Capabilities { manage_apps: true, reveal_label, self_update: false }
     }
 
     fn platform(&self) -> Option<Platform> {

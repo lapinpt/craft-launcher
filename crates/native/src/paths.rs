@@ -98,7 +98,7 @@ impl Paths {
         self.data.join("logs")
     }
 
-    /// Where apps are unpacked. Portable mode uses the sibling `App` folder; other installs use
+    /// Where apps are unpacked. Portable mode uses the sibling `Apps` folder; other installs use
     /// `<data>/apps`.
     pub fn apps(&self) -> PathBuf {
         portable_root().map_or_else(|| self.data.join("apps"), |root| portable_apps_dir(&root))
@@ -124,7 +124,7 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> 
     Ok(())
 }
 
-/// Portable mode: a `portable.txt` beside the executable keeps data in `Data` and apps in `App`
+/// Portable mode: a `portable.txt` beside the executable keeps data in `Data` and apps in `Apps`
 /// beside it (the Windows portable zip ships one).
 pub fn portable_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -134,7 +134,7 @@ pub fn portable_root() -> Option<PathBuf> {
 
 /// Apps installed by the portable launcher live under the launcher executable's directory.
 pub fn portable_apps_dir(root: &std::path::Path) -> PathBuf {
-    root.join("App")
+    root.join("Apps")
 }
 
 #[cfg(test)]
@@ -202,6 +202,6 @@ mod tests {
     #[test]
     fn portable_apps_are_under_the_executable_folder() {
         let root = PathBuf::from(r"D:\PortableApps\artcraft-launcher");
-        assert_eq!(portable_apps_dir(&root), root.join("App"));
+        assert_eq!(portable_apps_dir(&root), root.join("Apps"));
     }
 }

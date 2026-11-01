@@ -34,7 +34,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/storytold/craft-launcher/releases/latest"><b>Download ArtCraft Launcher</b></a> ·
+  <a href="https://github.com/lapinpt/craft-launcher/releases/latest"><b>Download ArtCraft Launcher</b></a> ·
   <a href="https://getartcraft.com/">ArtCraft</a> ·
   <a href="https://getartcraft.com/apps">The Craft App Suite</a>
 </p>
@@ -124,9 +124,9 @@ installed by hand (and the launcher finds apps you installed yourself):
 | Linux, inside the launcher's Flatpak, with no Flatpak on the host | `~/.var/app/ai.storyteller.artcraft-launcher/data/artcraft-launcher/apps/<app>` | The release tarball, unpacked into the launcher's own folder and run inside the same sandbox, with its settings in a `home/` folder beside it. Nothing is installed on the host, and each app's configuration stays in the sandbox |
 | FreeBSD | `/usr/local` | The release tree, with a password prompt (polkit); `~/.local` when polkit isn't installed |
 
-ArtCraft Launcher keeps itself current too: when a new version is out, **Update and restart**
-downloads it, verifies it, puts it where this copy is installed (the `.app`, the Windows Installer
-package or portable folder, the AppImage, or the `.deb`/`.rpm`) and reopens it.
+This fork does not check for or install launcher updates automatically. Download and install a newer
+version from the [lapinpt/craft-launcher releases](https://github.com/lapinpt/craft-launcher/releases)
+when you want to update the launcher.
 
 Updates use the same format an app was installed with. Every download is checked against the
 release's published SHA-256 before it is installed, and a running app is never replaced.
@@ -139,7 +139,7 @@ executable) and keeps the previous two runs as `artcraft-launcher.1.log` and
 
 ## Downloads
 
-Download the build for your computer from the [latest release](https://github.com/storytold/craft-launcher/releases/latest), or browse [all releases](https://github.com/storytold/craft-launcher/releases). Every release has a `SHA256SUMS.txt` to check the files against. `<ver>` is the version number, for example `0.1.0`.
+Download the build for your computer from the [latest release](https://github.com/lapinpt/craft-launcher/releases/latest), or browse [all releases](https://github.com/lapinpt/craft-launcher/releases). Every release has a `SHA256SUMS.txt` to check the files against. `<ver>` is the version number, for example `0.1.0`.
 
 **Windows** (10 and 11)
 

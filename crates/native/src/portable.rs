@@ -238,9 +238,8 @@ pub fn install(
     // Craft apps use portable.txt to keep their data beside the executable. Most releases ship
     // this marker already; add it when missing (LightCraft currently omits it) and track it as an
     // installed file so updates and removal remain safe.
-    if !files.iter().any(|relative| {
-        relative.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("portable.txt"))
-    }) {
+    if !files.iter().any(|relative| relative.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("portable.txt")))
+    {
         let marker = PathBuf::from("portable.txt");
         std::fs::write(unpacked.join(&marker), []).map_err(|e| format!("couldn't create the portable data marker ({e})"))?;
         files.push(marker);
