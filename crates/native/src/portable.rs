@@ -601,7 +601,10 @@ mod tests {
             assert_eq!(record.path, root.join("PhotoCraft.exe"));
             assert_eq!(std::fs::read(&record.path).unwrap(), version.as_bytes());
             assert_eq!(std::fs::read(root.join("lib/runtime.dll")).unwrap(), b"library");
-            assert_eq!(record.files, ["photocraft-cli.exe", "PhotoCraft.exe", "lib/runtime.dll", "LICENSE-MIT"].map(|p| root.join(p)));
+            assert_eq!(
+                record.files,
+                ["photocraft-cli.exe", "PhotoCraft.exe", "lib/runtime.dll", "LICENSE-MIT", "portable.txt"].map(|p| root.join(p))
+            );
             let personal = root.join("settings.json");
             if previous.is_some() {
                 assert_eq!(std::fs::read(&personal).unwrap(), b"personal");

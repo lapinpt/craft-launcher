@@ -2189,7 +2189,7 @@ mod tests {
         let paths = Paths::under(std::path::Path::new(r"C:\scratch"));
         let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap();
         assert_eq!(default_folder(PackageKind::Msi, Some(Arch::X64), &paths), Some(program_files.join("ArtCraft")));
-        assert_eq!(default_folder(PackageKind::PortableZip, Some(Arch::X64), &paths), Some(paths.apps()));
+        assert_eq!(default_folder(PackageKind::PortableZip, Some(Arch::X64), &paths), paths.apps().parent().map(Path::to_path_buf));
         assert_eq!(default_folder(PackageKind::Dmg, Some(Arch::X64), &paths), None);
     }
 
