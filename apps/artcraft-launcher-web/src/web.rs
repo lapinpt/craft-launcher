@@ -6,7 +6,7 @@ use std::rc::Rc;
 use artcraft_launcher_core::details::{AppDetails, MAX_SCREENSHOT_BYTES, looks_like_jpeg};
 use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, LatestRelease, Origin, Source};
 use artcraft_launcher_core::release::{self, Release};
-use artcraft_launcher_core::{Arch, Os, Platform, SUITE, catalog, version};
+use artcraft_launcher_core::{Arch, Os, Platform, SUITE};
 use artcraft_launcher_ui_egui::{Host, LauncherUi, Settings, i18n};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -28,17 +28,8 @@ fn detect_language() {
     let mut tags = Vec::new();
 
     // ?lang=xx in the URL takes priority.
-    if let Ok(href) = window.location().href()
-        && let Some(idx) = href.find('?')
-    {
-        for pair in href[idx + 1..].split('&') {
-            if let Some((k, v)) = pair.split_once('=')
-                && k == "lang"
-                && !v.is_empty()
-            {
-                tags.push(v.to_string());
-            }
-        }
+    if let Ok(href) = window.location().href() {
+        tags.extend(crate::lang_params(&href));
     }
 
     // Then the browser's preferred languages.
@@ -193,12 +184,6 @@ impl WebBackend {
                 });
                 events.borrow_mut().push(Event::Latest { app: app.id.to_string(), latest, from: Origin::GitHub });
                 ctx.request_repaint();
-            }
-            if let Ok(LatestRelease::Found(r)) = latest(catalog::LAUNCHER_REPO, false).await
-                && let (Some(l), Some(c)) = (r.version.as_ref(), version::parse(env!("CARGO_PKG_VERSION")))
-                && version::is_newer(l, &c)
-            {
-                events.borrow_mut().push(Event::LauncherUpdate(r));
             }
             let at = (js_sys::Date::now() / 1000.0) as i64;
             events.borrow_mut().push(Event::CheckFinished { at, source: Source::GitHubApi, rate_limited_until: limited });

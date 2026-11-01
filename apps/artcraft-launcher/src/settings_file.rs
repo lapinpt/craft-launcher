@@ -8,13 +8,20 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Where eframe keeps its state for `app_id`, as it picks it for a window with that app id.
+/// Where the settings file is. In portable mode it is inside `Data`, so a suite carried on a stick
+/// keeps its settings when it is plugged into another computer. Without
+/// `portable.txt` it is eframe's own folder, which is in the user's profile and cannot travel.
 pub fn path(app_id: &str) -> Option<PathBuf> {
     path_with_portable_root(app_id, artcraft_launcher_native::paths::portable_root().as_deref())
 }
 
+/// The settings file inside the portable `Data` folder.
+fn portable_settings(root: &Path) -> PathBuf {
+    root.join("Data").join("app.ron")
+}
+
 fn path_with_portable_root(app_id: &str, portable_root: Option<&Path>) -> Option<PathBuf> {
-    portable_root.map(|root| root.join("Data").join("app.ron")).or_else(|| eframe::storage_dir(app_id).map(|dir| dir.join("app.ron")))
+    portable_root.map(portable_settings).or_else(|| eframe::storage_dir(app_id).map(|dir| dir.join("app.ron")))
 }
 
 /// The value stored under `key`, if the file has one that still reads.
@@ -93,6 +100,13 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn a_portable_suite_keeps_its_settings_inside_itself() {
+        // Built with `join` so the test reads the same on Windows and on Linux CI.
+        let root = PathBuf::from("Suite");
+        assert_eq!(portable_settings(&root), root.join("Data").join("app.ron"));
     }
 
     #[test]
