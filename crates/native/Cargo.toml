@@ -34,6 +34,10 @@ ureq = { version = "3.5", default-features = false, features = ["rustls-no-provi
 # The tests' fake server answers with real gzip streams (Reply::Gzipped), on every platform.
 flate2 = "1"
 
+[dev-dependencies]
+# The tests' fake server answers with real gzip streams (Reply::Gzipped), on every platform.
+flate2 = "1"
+
 [target.'cfg(unix)'.dependencies]
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
